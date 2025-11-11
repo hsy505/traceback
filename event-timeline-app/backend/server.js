@@ -136,29 +136,59 @@ app.post('/api/search-events', async (req, res) => {
 
 请确保返回的是纯 JSON 格式，不要包含任何其他文字或解释。`;
 
-    // 调用 Kimi API，使用内置的 $web_search 工具
-    const response = await client.chat.completions.create({
-      model: 'moonshot-v1-128k',
-      messages: [
-        {
-          role: 'system',
-          content: '你是一个专业的新闻事件整理助手。你会使用网络搜索工具查找相关信息，并以结构化的 JSON 格式返回结果。'
-        },
-        {
-          role: 'user',
-          content: prompt
-        }
-      ],
-      tools: [
-        {
-          type: 'builtin_function',
-          function: {
-            name: '$web_search'
+    // 重试逻辑的辅助函数
+    const makeRequestWithRetry = async (requestFn, maxRetries = 3) => {
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          return await requestFn();
+        } catch (error) {
+          // 检查是否是速率限制错误
+          if (error.status === 429 && attempt < maxRetries) {
+            // 获取重试等待时间
+            const retryAfter = parseInt(error.headers?.['retry-after'] || error.headers?.['x-retry-after'] || '1', 10);
+            const waitTime = retryAfter * 1000; // 转换为毫秒
+
+            console.log(`Rate limit hit (attempt ${attempt}/${maxRetries}). Waiting ${retryAfter}s before retry...`);
+
+            // 等待指定时间后重试
+            await new Promise(resolve => setTimeout(resolve, waitTime));
+            continue;
           }
+
+          // 如果不是速率限制错误，或已达到最大重试次数，抛出错误
+          throw error;
         }
-      ],
-      temperature: 0.3
-    });
+      }
+    };
+
+    // 声明 content 变量
+    let content;
+
+    // 调用 Kimi API，使用内置的 $web_search 工具
+    const response = await makeRequestWithRetry(() =>
+      client.chat.completions.create({
+        model: 'moonshot-v1-128k',
+        messages: [
+          {
+            role: 'system',
+            content: '你是一个专业的新闻事件整理助手。你会使用网络搜索工具查找相关信息，并以结构化的 JSON 格式返回结果。'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        tools: [
+          {
+            type: 'builtin_function',
+            function: {
+              name: '$web_search'
+            }
+          }
+        ],
+        temperature: 0.3
+      })
+    );
 
     // 解析响应
     const message = response.choices[0].message;
@@ -195,12 +225,14 @@ app.post('/api/search-events', async (req, res) => {
         });
       }
 
-      // 再次调用 API 获取最终结果
-      const finalResponse = await client.chat.completions.create({
-        model: 'moonshot-v1-128k',
-        messages: messages,
-        temperature: 0.3
-      });
+      // 再次调用 API 获取最终结果（使用重试逻辑）
+      const finalResponse = await makeRequestWithRetry(() =>
+        client.chat.completions.create({
+          model: 'moonshot-v1-128k',
+          messages: messages,
+          temperature: 0.3
+        })
+      );
 
       content = finalResponse.choices[0].message.content;
       console.log('Final response content:', content);
