@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>事件追溯时间轴 | Event Timeline</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- vis-timeline CSS -->
+    <link href="https://unpkg.com/vis-timeline@7.7.3/styles/vis-timeline-graph2d.min.css" rel="stylesheet" type="text/css" />
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📅 事件追溯时间轴</h1>
+            <p class="subtitle">使用 Kimi AI 搜索并可视化事件发展历程</p>
+        </header>
+
+        <div class="search-panel">
+            <div class="input-group">
+                <label for="eventInput">事件名称</label>
+                <input
+                    type="text"
+                    id="eventInput"
+                    placeholder="例如：Tesla 新车发布、OpenAI GPT-5、2024巴黎奥运会"
+                    autocomplete="off"
+                />
+            </div>
+
+            <div class="date-range">
+                <div class="input-group">
+                    <label for="startDate">开始日期</label>
+                    <input type="date" id="startDate" />
+                </div>
+                <div class="input-group">
+                    <label for="endDate">结束日期</label>
+                    <input type="date" id="endDate" />
+                </div>
+            </div>
+
+            <button id="searchBtn" class="search-btn">
+                <span class="btn-text">🔍 搜索事件</span>
+                <span class="btn-loading" style="display: none;">⏳ 搜索中...</span>
+            </button>
+
+            <div id="errorMessage" class="error-message" style="display: none;"></div>
+        </div>
+
+        <div id="resultPanel" class="result-panel" style="display: none;">
+            <div class="result-header">
+                <h2 id="resultTitle"></h2>
+                <p id="resultInfo" class="result-info"></p>
+            </div>
+            <div id="timeline"></div>
+            <div id="eventList" class="event-list"></div>
+        </div>
+
+        <footer>
+            <p>Powered by <a href="https://www.moonshot.cn/" target="_blank">Kimi K2</a> |
+            Made with <a href="https://visjs.github.io/vis-timeline/" target="_blank">vis-timeline</a></p>
+        </footer>
+    </div>
+
+    <!-- vis-timeline JS -->
+    <script src="https://unpkg.com/vis-timeline@7.7.3/standalone/umd/vis-timeline-graph2d.min.js"></script>
+    <!-- App JS -->
+    <script src="app.js"></script>
+</body>
+</html>
