@@ -10,6 +10,76 @@ const __dirname = path.dirname(__filename);
 
 dotenv.config();
 
+// 辅助函数：从文本中提取 JSON
+function extractJSON(text) {
+  if (!text) return null;
+
+  text = text.trim();
+
+  // 尝试1: 检查是否已经是有效 JSON
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    // 继续尝试其他方法
+  }
+
+  // 尝试2: 从 markdown 代码块中提取
+  const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if (jsonMatch) {
+    try {
+      return JSON.parse(jsonMatch[1].trim());
+    } catch (e) {
+      // 继续
+    }
+  }
+
+  // 尝试3: 从 JSON 对象开始提取
+  const jsonStart = text.indexOf('{');
+  if (jsonStart !== -1) {
+    let braceCount = 0;
+    let inString = false;
+    let escapeNext = false;
+
+    for (let i = jsonStart; i < text.length; i++) {
+      const char = text[i];
+
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+
+      if (char === '\\') {
+        escapeNext = true;
+        continue;
+      }
+
+      if (char === '"' && !escapeNext) {
+        inString = !inString;
+        continue;
+      }
+
+      if (!inString) {
+        if (char === '{') {
+          braceCount++;
+        } else if (char === '}') {
+          braceCount--;
+          if (braceCount === 0) {
+            const jsonStr = text.substring(jsonStart, i + 1);
+            try {
+              return JSON.parse(jsonStr);
+            } catch (e) {
+              // 继续
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // 没有找到有效 JSON
+  return null;
+}
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -91,21 +161,73 @@ app.post('/api/search-events', async (req, res) => {
     });
 
     // 解析响应
-    let content = response.choices[0].message.content;
-    console.log('Raw response:', content);
+    const message = response.choices[0].message;
+    console.log('Response message:', JSON.stringify(message, null, 2));
 
-    // 尝试提取 JSON（处理可能的 markdown 代码块）
-    const jsonMatch = content.match(/```json\s*([\s\S]*?)\s*```/) || content.match(/```\s*([\s\S]*?)\s*```/);
-    if (jsonMatch) {
-      content = jsonMatch[1];
+    // 处理工具调用响应
+    if (message.tool_calls && message.tool_calls.length > 0) {
+      // 如果有工具调用，需要继续对话以获取最终结果
+      console.log('Tool calls detected, processing...');
+
+      // 构建工具调用的消息
+      const messages = [
+        {
+          role: 'system',
+          content: '你是一个专业的新闻事件整理助手。你会使用网络搜索工具查找相关信息，并以结构化的 JSON 格式返回结果。'
+        },
+        {
+          role: 'user',
+          content: prompt
+        },
+        {
+          role: 'assistant',
+          content: message.content,
+          tool_calls: message.tool_calls
+        }
+      ];
+
+      // 为每个工具调用添加结果
+      for (const toolCall of message.tool_calls) {
+        messages.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: JSON.stringify({ result: 'Search completed', status: 'success' })
+        });
+      }
+
+      // 再次调用 API 获取最终结果
+      const finalResponse = await client.chat.completions.create({
+        model: 'moonshot-v1-128k',
+        messages: messages,
+        temperature: 0.3
+      });
+
+      content = finalResponse.choices[0].message.content;
+      console.log('Final response content:', content);
+    } else if (message.content) {
+      content = message.content;
+    } else {
+      throw new Error('No content in response');
     }
 
-    // 解析 JSON
-    const result = JSON.parse(content);
+    // 使用强大的 JSON 提取函数
+    const result = extractJSON(content);
+
+    if (!result) {
+      console.error('Failed to extract JSON from content');
+      console.error('Raw content (first 500 chars):', content.substring(0, 500));
+      throw new Error('Failed to parse JSON response: Invalid JSON format');
+    }
+
+    console.log('Extracted result:', JSON.stringify(result, null, 2).substring(0, 500));
 
     // 验证数据结构
     if (!result.events || !Array.isArray(result.events)) {
-      throw new Error('Invalid response format');
+      throw new Error('Invalid response format: missing or invalid events array');
+    }
+
+    if (result.events.length === 0) {
+      throw new Error('No events found in response');
     }
 
     res.json({
@@ -116,11 +238,30 @@ app.post('/api/search-events', async (req, res) => {
 
   } catch (error) {
     console.error('Error searching events:', error);
-    res.status(500).json({
+
+    // 提供更详细的错误信息用于调试
+    const errorResponse = {
       success: false,
       error: error.message || 'Failed to search events',
-      details: error.response?.data || error.toString()
-    });
+      type: error.constructor.name
+    };
+
+    // 添加更多调试信息
+    if (error.response?.data) {
+      errorResponse.apiError = error.response.data;
+    }
+    if (error.cause) {
+      errorResponse.cause = error.cause.message || error.cause.toString();
+    }
+
+    // 不同错误类型的特殊处理
+    if (error.message.includes('API') || error.message.includes('Connection')) {
+      errorResponse.suggestion = 'Please check if KIMI_API_KEY is valid and correctly configured in .env file';
+    } else if (error.message.includes('JSON')) {
+      errorResponse.suggestion = 'API response format issue. Please check the logs for more details.';
+    }
+
+    res.status(500).json(errorResponse);
   }
 });
 
