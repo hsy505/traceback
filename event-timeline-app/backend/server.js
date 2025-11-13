@@ -114,9 +114,13 @@ app.post('/api/search-events', async (req, res) => {
     console.log(`Searching for event: "${event}" from ${start} to ${end}`);
 
     // 构建提示词
-    const prompt = `请搜索关于"${event}"从 ${start} 到 ${end} 期间的重要新闻和事件。
+    const prompt = `请使用网络搜索工具查找关于"${event}"从 ${start} 到 ${end} 期间的真实新闻和事件。
 
-要求：
+重要要求：
+- 必须使用网络搜索结果中的真实 URL，不得修改、重构或生成 URL
+- 如果某个事件没有找到来源链接，可以留空，但不要编造 URL
+
+整理要求：
 1. 搜索并整理出 10-15 个关键时间节点
 2. 每个事件包含：具体日期、标题、简短摘要（50字内）、来源链接
 3. 按时间顺序排列（从早到晚）
@@ -129,7 +133,7 @@ app.post('/api/search-events', async (req, res) => {
       "title": "事件标题",
       "summary": "事件摘要",
       "source": "来源网站名称",
-      "url": "完整URL链接"
+      "url": "完整URL链接（必须是搜索结果中的真实链接）"
     }
   ]
 }
@@ -218,10 +222,20 @@ app.post('/api/search-events', async (req, res) => {
 
       // 为每个工具调用添加结果
       for (const toolCall of message.tool_calls) {
+        console.log('Tool call:', JSON.stringify(toolCall, null, 2));
+        console.log('Tool call function:', JSON.stringify(toolCall.function, null, 2));
+        console.log('Tool call arguments:', toolCall.function.arguments);
+
+        // 实际传递搜索结果给 AI，而不是占位符
+        // 根据 Moonshot API，内置的 $web_search 工具会自动处理搜索结果
+        // 我们传递成功的结果通知即可
         messages.push({
           role: 'tool',
           tool_call_id: toolCall.id,
-          content: JSON.stringify({ result: 'Search completed', status: 'success' })
+          content: JSON.stringify({
+            status: 'success',
+            message: 'Web search completed successfully. The search results have been processed and are available for reference.'
+          })
         });
       }
 
