@@ -243,7 +243,92 @@ app.post('/api/search-events', async (req, res) => {
     }
 
     // 使用强大的 JSON 提取函数
-    const result = extractJSON(content);
+    let result = extractJSON(content);
+
+    // 如果提取失败，但内容是有效的 JSON 格式，直接解析
+    if (!result && content && content.trim().startsWith('{')) {
+      try {
+        result = JSON.parse(content);
+        console.log('Successfully parsed JSON directly from content');
+      } catch (e) {
+        console.log('Direct JSON parsing also failed:', e.message);
+
+        // 尝试修复不完整的 JSON
+        try {
+          // 如果是由于字符串未终止导致的错误，尝试修复
+          let fixedContent = content.trim();
+
+          // 更智能的 JSON 修复策略
+          // 1. 找到最后一个完整的事件对象
+          const eventEndMatches = [...fixedContent.matchAll(/}/g)];
+          let lastValidEventEnd = -1;
+
+          // 从后往前找，确保找到的是事件对象的结束
+          for (let i = eventEndMatches.length - 1; i >= 0; i--) {
+            const endPos = eventEndMatches[i].index;
+            const beforeEnd = fixedContent.substring(0, endPos + 1);
+
+            // 检查这个结束位置是否可能是一个完整事件
+            if (beforeEnd.includes('"date"') && beforeEnd.includes('"title"') && beforeEnd.includes('"summary"')) {
+              lastValidEventEnd = endPos;
+              break;
+            }
+          }
+
+          if (lastValidEventEnd !== -1) {
+            // 移除不完整的事件
+            fixedContent = fixedContent.substring(0, lastValidEventEnd + 1);
+
+            // 确保 events 数组正确结束
+            if (fixedContent.includes('"events": [')) {
+              // 如果最后一个事件后面有逗号，移除它
+              if (fixedContent.endsWith(',')) {
+                fixedContent = fixedContent.slice(0, -1);
+              }
+              fixedContent = fixedContent + '\n  ]\n}';
+            }
+          } else if (fixedContent.endsWith(',')) {
+            // 如果是逗号结束，移除逗号并结束数组和对象
+            fixedContent = fixedContent.slice(0, -1) + '\n  ]\n}';
+          }
+
+          // 再次尝试解析修复后的内容
+          result = JSON.parse(fixedContent);
+          console.log('Successfully parsed fixed JSON content');
+        } catch (fixError) {
+          console.log('JSON fixing also failed:', fixError.message);
+
+          // 最终尝试：手动构建有效的事件数组
+          try {
+            const dateMatches = [...content.matchAll(/"date":\s*"([^"]+)"/g)];
+            const titleMatches = [...content.matchAll(/"title":\s*"([^"]+)"/g)];
+            const summaryMatches = [...content.matchAll(/"summary":\s*"([^"]+)"/g)];
+            const sourceMatches = [...content.matchAll(/"source":\s*"([^"]+)"/g)];
+            const urlMatches = [...content.matchAll(/"url":\s*"([^"]+)"/g)];
+
+            if (dateMatches.length > 0 && titleMatches.length > 0) {
+              const events = [];
+              const minLength = Math.min(dateMatches.length, titleMatches.length, summaryMatches.length || dateMatches.length);
+
+              for (let i = 0; i < minLength; i++) {
+                events.push({
+                  date: dateMatches[i] ? dateMatches[i][1] : '',
+                  title: titleMatches[i] ? titleMatches[i][1] : '',
+                  summary: summaryMatches[i] ? summaryMatches[i][1] : '',
+                  source: sourceMatches[i] ? sourceMatches[i][1] : 'Unknown',
+                  url: urlMatches[i] ? urlMatches[i][1] : ''
+                });
+              }
+
+              result = { events };
+              console.log('Successfully extracted events using regex parsing');
+            }
+          } catch (regexError) {
+            console.log('Regex extraction also failed:', regexError.message);
+          }
+        }
+      }
+    }
 
     if (!result) {
       console.error('Failed to extract JSON from content');
