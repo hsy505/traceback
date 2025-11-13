@@ -93,6 +93,34 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../frontend')));
 
+// 估算token数量的函数
+async function estimateTokens(messages, model = 'moonshot-v1-128k') {
+  try {
+    const response = await fetch('https://api.moonshot.cn/v1/tokenizers/estimate-token-count', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.KIMI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: model,
+        messages: messages
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Token estimation failed: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data.data?.total_tokens || 0;
+  } catch (error) {
+    console.warn('Token estimation failed:', error.message);
+    // 如果估算失败，返回一个保守的估计值
+    return 5000; // 保守估计
+  }
+}
+
 // 健康检查接口
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'Backend is running' });
@@ -139,6 +167,28 @@ app.post('/api/search-events', async (req, res) => {
 }
 
 请确保返回的是纯 JSON 格式，不要包含任何其他文字或解释。`;
+
+    // 构建消息数组用于token估算
+    const estimationMessages = [
+      {
+        role: 'system',
+        content: '你是一个专业的新闻事件整理助手。你会使用网络搜索工具查找相关信息，并以结构化的 JSON 格式返回结果。'
+      },
+      {
+        role: 'user',
+        content: prompt
+      }
+    ];
+
+    // 估算token数量
+    const estimatedTokens = await estimateTokens(estimationMessages, 'moonshot-v1-128k');
+    console.log(`Estimated tokens: ${estimatedTokens}`);
+
+    // 计算合适的max_tokens值（128k模型最大131,072 tokens）
+    const maxModelTokens = 131072;
+    const safetyMargin = 2000; // 安全余量
+    const calculatedMaxTokens = Math.min(80000, maxModelTokens - estimatedTokens - safetyMargin);
+    console.log(`Calculated max_tokens: ${calculatedMaxTokens}`);
 
     // 重试逻辑的辅助函数
     const makeRequestWithRetry = async (requestFn, maxRetries = 3) => {
@@ -190,13 +240,23 @@ app.post('/api/search-events', async (req, res) => {
             }
           }
         ],
-        temperature: 0.3
+        temperature: 0.3,
+        max_tokens: calculatedMaxTokens,  // 使用动态计算的token限制
+        stream: false       // 关闭流式输出，确保完整性
       })
     );
 
     // 解析响应
     const message = response.choices[0].message;
     console.log('Response message:', JSON.stringify(message, null, 2));
+
+    // 检查是否被截断
+    const finishReason = response.choices[0].finish_reason;
+    if (finishReason === 'length') {
+      console.warn('⚠️ 响应被截断，考虑增大 max_tokens 或使用流式输出');
+    } else if (finishReason === 'stop') {
+      console.log('✅ 响应完整输出');
+    }
 
     // 处理工具调用响应
     if (message.tool_calls && message.tool_calls.length > 0) {
@@ -240,16 +300,42 @@ app.post('/api/search-events', async (req, res) => {
       }
 
       // 再次调用 API 获取最终结果（使用重试逻辑）
+      // 估算第二轮对话的token需求
+      const finalEstimationMessages = [
+        ...messages,
+        {
+          role: 'tool',
+          content: JSON.stringify({
+            status: 'success',
+            message: 'Web search completed successfully. The search results have been processed and are available for reference.'
+          }),
+          tool_call_id: message.tool_calls[0].id
+        }
+      ];
+      const finalEstimatedTokens = await estimateTokens(finalEstimationMessages, 'moonshot-v1-128k');
+      const finalCalculatedMaxTokens = Math.min(80000, maxModelTokens - finalEstimatedTokens - 2000);
+      console.log(`Final calculated max_tokens: ${finalCalculatedMaxTokens}`);
+
       const finalResponse = await makeRequestWithRetry(() =>
         client.chat.completions.create({
           model: 'moonshot-v1-128k',
           messages: messages,
-          temperature: 0.3
+          temperature: 0.3,
+          max_tokens: finalCalculatedMaxTokens,  // 使用动态计算的token限制
+          stream: false       // 关闭流式输出，确保完整性
         })
       );
 
       content = finalResponse.choices[0].message.content;
       console.log('Final response content:', content);
+
+      // 检查最终响应是否被截断
+      const finalFinishReason = finalResponse.choices[0].finish_reason;
+      if (finalFinishReason === 'length') {
+        console.warn('⚠️ 最终响应被截断，可能需要进一步优化');
+      } else if (finalFinishReason === 'stop') {
+        console.log('✅ 最终响应完整输出');
+      }
     } else if (message.content) {
       content = message.content;
     } else {
